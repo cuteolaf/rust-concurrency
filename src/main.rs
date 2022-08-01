@@ -144,7 +144,6 @@ impl TxHandler {
     ) -> TxHandler {
         let thread = thread::spawn(move || loop {
             let message = receiver.recv().unwrap();
-            let mut data = server_data.lock().unwrap();
 
             match message {
                 Message::NewTx(Tx {
@@ -152,20 +151,25 @@ impl TxHandler {
                     amount,
                     tx_type,
                 }) => {
-                    match tx_type {
-                        TxType::DEPOSIT => {
-                            data.increase_balance(account, amount);
+                    {
+                        let mut data = server_data.lock().unwrap();
+                        match tx_type {
+                            TxType::DEPOSIT => {
+                                data.increase_balance(account, amount);
+                            }
+                            TxType::WITHDRAW => {
+                                data.decrease_balance(account, amount);
+                            }
                         }
-                        TxType::WITHDRAW => {
-                            data.decrease_balance(account, amount);
+                        if data.decrease_pending_tx(account, 1) == 0 {
+                            data.set_handle(account, INVALID_HANDLE);
                         }
+                        data.decrease_tx_count(id, 1);
                     }
-                    if data.decrease_pending_tx(account, 1) == 0 {
-                        data.set_handle(account, INVALID_HANDLE);
-                    }
-                    data.decrease_tx_count(id, 1);
+                    thread::sleep(Duration::from_millis(500)); // forcing delay for experimental purpose
                 }
                 Message::Terminate => {
+                    println!("Terminating thread {}", id);
                     break;
                 }
             }
@@ -244,7 +248,9 @@ impl Aptone {
 
 impl Drop for Aptone {
     fn drop(&mut self) {
+        println!("--- Killing all threads...");
         for handler in &mut self.handles {
+            println!("          Sending termination message...");
             handler.sender.send(Message::Terminate).unwrap();
         }
 
@@ -266,19 +272,25 @@ fn main() {
             let aptone = aptone_one.lock().unwrap();
             aptone.deposit(0, 500);
             aptone.deposit(1, 400);
-            thread::sleep(Duration::from_millis(100));
             aptone.withdraw(1, 300);
             aptone.withdraw(0, 100);
+            thread::sleep(Duration::from_millis(700));
         }
     });
     simulator.join().unwrap();
-    let aptone = Arc::clone(&aptone);
-    let aptone = aptone.lock().unwrap();
-    for account in 0..2 {
-        println!(
-            "account: {} \t balance: {}",
-            account,
-            aptone.get_balance(account)
-        );
+
+    println!("wait until all transactions are finished");
+    thread::sleep(Duration::from_secs(10));
+    {
+        let aptone = Arc::clone(&aptone);
+        let aptone = aptone.lock().unwrap();
+        for account in 0..2 {
+            println!(
+                "account: {} \t balance: {}",
+                account,
+                aptone.get_balance(account)
+            );
+        }
     }
+    println!("Terminating program...");
 }
